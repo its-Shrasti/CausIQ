@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.DS_Store
+.ipynb_checkpoints/
+
+# Generated data is reproducible from a fixed seed:
+#   python -m causiq.ingest.generate
+# Kept OUT of version control so the repo stays small, but the ground truth
+# file IS committed because it is the evaluation key reviewers need.
+data/raw/*.parquet
+!data/ground_truth.json
+
+# Cached LLM responses (regenerable; keeps demo runs free and deterministic)
+data/llm_cache/
+
+# Local run artefacts
+.streamlit/secrets.toml
+*.log

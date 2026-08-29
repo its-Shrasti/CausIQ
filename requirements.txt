@@ -1,0 +1,15 @@
+# CausIQ — prototype dependencies
+# Pinned to majors that are known to work together; no build tooling required.
+
+pandas>=2.0
+numpy>=1.24
+scipy>=1.11
+statsmodels>=0.14        # Holt-Winters, OLS with robust standard errors
+duckdb>=0.10             # in-process warehouse; the SQL layer
+pyarrow>=14.0            # parquet IO
+pyyaml>=6.0              # the semantic contract
+streamlit>=1.30          # the decision workspace
+plotly>=5.18             # charts
+
+# Optional. The narrative layer runs without it via the cached/offline path.
+google-generativeai>=0.8

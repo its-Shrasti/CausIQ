@@ -1,0 +1,17 @@
+# Theme pinned to light so the validated chart palette is what viewers actually
+# see. The palette was checked against the light surface (#fcfcfb); letting the
+# app follow an OS dark setting would put those steps on a surface they were
+# never validated against.
+[theme]
+base = "light"
+primaryColor = "#2a78d6"
+backgroundColor = "#fcfcfb"
+secondaryBackgroundColor = "#f4f3f0"
+textColor = "#0b0b0b"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

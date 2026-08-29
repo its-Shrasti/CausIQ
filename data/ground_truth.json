@@ -1,0 +1,50 @@
+{
+  "generated_at": "2026-08-27T00:00:00",
+  "seed": 20260827,
+  "attribution_method": "exact Shapley over 2^5 counterfactual worlds",
+  "note": "Noise arrays are fixed across all counterfactual evaluations, so toggling a shock changes the outcome only through that shock's causal pathway.",
+  "analysis_window": {
+    "kpi": "net_revenue",
+    "region": "EU",
+    "start": "2026-08-17",
+    "end": "2026-08-23"
+  },
+  "expected_revenue_inr": 97663607.50975785,
+  "actual_revenue_inr": 89850518.9086648,
+  "movement_pct": -8.0000000003199,
+  "contributions_pct": {
+    "checkout_deploy": -3.599999999994101,
+    "stockout": -2.3999999999975876,
+    "competitor_promo": -1.9000000000020638,
+    "marketing_cut": -1.099999999999532,
+    "accessories_promo": 0.9999999996733838
+  },
+  "contributions_inr": {
+    "checkout_deploy": -3515889.870345521,
+    "stockout": -2343926.5802318323,
+    "competitor_promo": -1855608.5426874144,
+    "marketing_cut": -1074299.6826068792,
+    "accessories_promo": 976636.0747785934
+  },
+  "shock_strengths": {
+    "checkout_deploy": 0.03683187989946249,
+    "stockout": 0.04764730105472529,
+    "competitor_promo": 0.0273500121207517,
+    "marketing_cut": 0.01139913169936996,
+    "accessories_promo": 0.3323313378975254
+  },
+  "shock_labels": {
+    "checkout_deploy": "Checkout redesign v4.2 shipped to EU only",
+    "stockout": "Hero SKU stockout, EU fulfilment centres",
+    "competitor_promo": "Competitor 12% price cut on comparable SKUs",
+    "marketing_cut": "Planned 30% paid acquisition budget reduction, EU",
+    "accessories_promo": "Accessories bundle promotion, EU"
+  },
+  "mediation_note": "stockout and competitor_promo act on BOTH sessions and conversion. A correlational ranking will over-attribute to marketing_cut because total sessions fell for three different reasons.",
+  "planted_defects": {
+    "ops_inventory_last_load": "2026-08-17 (240h stale vs 180h SLA)",
+    "wh_sales_discount_null_rate_eu_from_2026_08_20": 0.18,
+    "wearables_history_weeks": 6,
+    "eu_landed_cost_increase_from_2026_08_18_pct": 3.1
+  }
+}

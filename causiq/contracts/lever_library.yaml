@@ -1,0 +1,205 @@
+# =============================================================================
+# CausIQ — ACTION LEVER LIBRARY
+# =============================================================================
+# Actions are RETRIEVED from this governed library, never invented by the LLM.
+# The LLM may only re-phrase the `action_template` for a persona's reading
+# level. It may not alter impact figures, owners, constraints or thresholds.
+#
+# Structure follows the brief exactly:
+#   driver -> controllable lever -> action -> expected impact
+#          -> owner -> confidence -> monitoring plan
+#
+# `expected_impact` is computed at runtime by the simulation stage from the
+# estimated causal effect; the values below are elasticity PRIORS used to
+# parameterise that simulation, not hard-coded answers.
+# =============================================================================
+
+version: "1.4.0"
+owner: "Revenue Operations"
+
+levers:
+
+  - id: LV-001
+    driver: checkout_experience
+    lever: release_rollback
+    action_template: >
+      Roll back the {release_name} checkout build in {region} to the previous
+      stable version, then re-deploy behind a {pct}% canary after regression fixes.
+    preconditions:
+      - "Previous stable build available in artifact registry"
+      - "Causal effect of the release is statistically confirmed"
+    elasticity:
+      target_kpi: conversion_rate
+      # Recovery is capped at the causally attributed loss — never more.
+      recovery_fraction_of_attributed_loss: 0.92
+      lag_days: 2
+    cost:
+      one_off_inr: 400000
+      recurring_inr_per_month: 0
+      engineering_days: 3
+    risk: low
+    risk_notes: "Reverting to a build that ran for 14 months without incident."
+    owner_role: "Head of Product Engineering"
+    decision_rights: "May roll back own release without further approval."
+    reversible: true
+    monitoring:
+      metrics: [checkout_error_rate, conversion_rate, payment_success_rate]
+      cadence: hourly
+      horizon_days: 7
+      rollback_trigger: "checkout_error_rate not below 0.8% within 24h of revert"
+
+  - id: LV-002
+    driver: checkout_experience
+    lever: targeted_hotfix
+    action_template: >
+      Ship a hotfix for the {error_class} failures in {region} checkout while
+      leaving the redesign live.
+    preconditions:
+      - "Error class isolated to a single payment path"
+    elasticity:
+      target_kpi: conversion_rate
+      recovery_fraction_of_attributed_loss: 0.65
+      lag_days: 5
+    cost:
+      one_off_inr: 900000
+      recurring_inr_per_month: 0
+      engineering_days: 8
+    risk: medium
+    risk_notes: "Root cause not yet isolated; may not address all failure modes."
+    owner_role: "Head of Product Engineering"
+    decision_rights: "Requires sprint reprioritisation by Eng Manager."
+    reversible: true
+    monitoring:
+      metrics: [checkout_error_rate, conversion_rate]
+      cadence: daily
+      horizon_days: 14
+      rollback_trigger: "conversion_rate not recovered 3pp within 7 days"
+
+  - id: LV-003
+    driver: competitor_price
+    lever: targeted_discount
+    action_template: >
+      Apply a {pct}% targeted discount on the {n} most price-exposed SKUs in
+      {category} for {days} days, limited to {region}.
+    preconditions:
+      - "Competitor price gap confirmed by at least two scrape observations"
+      - "Resulting margin stays above the 18% floor"
+    elasticity:
+      target_kpi: net_revenue
+      # Price elasticity of demand, category-level, estimated from 2024-25 promos
+      own_price_elasticity: -1.6
+      lag_days: 1
+    cost:
+      one_off_inr: 0
+      recurring_inr_per_month: 0
+      margin_cost: "computed at runtime from discount depth x volume"
+    risk: high
+    risk_notes: >
+      Margin-dilutive and habituating. Repeated discounting in this category
+      trained customers to wait for promotions in FY25.
+    owner_role: "Pricing Manager"
+    decision_rights: "Up to 10% without CFO approval. Above 10% needs CFO sign-off."
+    constraints:
+      - "Gross margin floor: 18%"
+      - "Maximum 10% depth without escalation"
+    reversible: true
+    monitoring:
+      metrics: [gross_margin_pct, net_revenue, units_sold, competitor_price_index]
+      cadence: daily
+      horizon_days: 14
+      rollback_trigger: "gross_margin_pct below 18% for 3 consecutive days"
+
+  - id: LV-004
+    driver: in_stock_rate
+    lever: expedite_replenishment
+    action_template: >
+      Expedite air freight for the {n} stocked-out hero SKUs into the {region}
+      fulfilment centres.
+    preconditions:
+      - "Supplier has confirmed available inventory"
+      - "Stockout confirmed as cause, not consequence, of demand shift"
+    elasticity:
+      target_kpi: conversion_rate
+      recovery_fraction_of_attributed_loss: 0.80
+      lag_days: 4
+    cost:
+      one_off_inr: 1800000
+      recurring_inr_per_month: 0
+    risk: medium
+    risk_notes: "Air freight cost is certain; demand recovery is not."
+    owner_role: "Supply Chain Lead"
+    decision_rights: "Expedite freight up to Rs 20L per incident without approval."
+    constraints:
+      - "Per-incident expedite cap: Rs 20,00,000"
+    reversible: false
+    monitoring:
+      metrics: [in_stock_rate, conversion_rate, days_of_cover]
+      cadence: daily
+      horizon_days: 21
+      rollback_trigger: "n/a - not reversible once freight is booked"
+
+  - id: LV-005
+    driver: marketing_spend
+    lever: reallocate_paid_budget
+    action_template: >
+      Restore {pct}% of the paid acquisition budget in {region}, weighted to
+      the channels with the highest observed marginal ROAS.
+    preconditions:
+      - "Traffic decline shown to be exogenous, not a downstream consequence"
+    elasticity:
+      target_kpi: sessions
+      spend_to_sessions_elasticity: 0.42     # diminishing returns
+      lag_days: 3
+    cost:
+      one_off_inr: 0
+      recurring_inr_per_month: 6000000
+    risk: medium
+    risk_notes: >
+      Only valid if the session decline is exogenous. If sessions fell BECAUSE
+      of stockouts or checkout failure, extra spend buys traffic into a broken
+      funnel and destroys ROAS. The engine blocks this lever when sessions are
+      identified as a mediator rather than a root driver.
+    blocked_when:
+      - "sessions_is_mediator == true"
+    owner_role: "Growth Lead"
+    decision_rights: "Reallocate within approved quarterly envelope."
+    reversible: true
+    monitoring:
+      metrics: [sessions, cac_inr, roas, conversion_rate]
+      cadence: daily
+      horizon_days: 14
+      rollback_trigger: "marginal ROAS below 2.1 for 5 consecutive days"
+
+  - id: LV-006
+    driver: seasonality
+    lever: none
+    action_template: "No action. Seasonal variation is removed by the baseline."
+    elasticity: null
+    cost: null
+    risk: none
+    owner_role: null
+    decision_rights: "Not actionable."
+    reversible: null
+    monitoring: null
+    # Present so the engine can explicitly say "this portion is not actionable"
+    # rather than silently omitting it and appearing to under-explain the gap.
+
+# -----------------------------------------------------------------------------
+# ESCALATION ROUTING — used when a driver falls outside a persona's entitlement
+# -----------------------------------------------------------------------------
+routing:
+  in_stock_rate:
+    notify_role: "Supply Chain Lead"
+    sla_hours: 4
+  checkout_experience:
+    notify_role: "Head of Product Engineering"
+    sla_hours: 2
+  discount_depth:
+    notify_role: "Pricing Manager"
+    sla_hours: 8
+  competitor_price:
+    notify_role: "Category Manager"
+    sla_hours: 24
+  marketing_spend:
+    notify_role: "Growth Lead"
+    sla_hours: 8

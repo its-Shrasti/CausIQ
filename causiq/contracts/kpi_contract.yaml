@@ -1,0 +1,560 @@
+# =============================================================================
+# CausIQ — KPI SEMANTIC CONTRACT
+# =============================================================================
+# The single governed source of truth for what a KPI *means*, how it is
+# computed, which drivers may explain it, what counts as material, where the
+# numbers came from, and who is allowed to see them.
+#
+# Every downstream stage reads this file. Nothing in the engine hard-codes a
+# formula, a threshold, or an access rule. The LLM never sees this file's
+# access rules — entitlements are enforced deterministically before any
+# evidence reaches a prompt.
+#
+# Company: NovaCart Retail Group (India-HQ global e-commerce), reporting in INR.
+# =============================================================================
+
+contract_version: "2.1.0"
+owner: "Enterprise Data Governance"
+effective_from: "2026-01-01"
+calendar: retail_454          # NOT ISO weeks — fiscal 4-4-5 retail calendar
+
+# How far before a measurement window the baseline model was last refit.
+# This is NOT a tuning knob: expectations for a trading week are set during
+# planning, ahead of the week itself. Refitting the baseline up to the window's
+# own start would let a slow-burning incident contaminate the very forecast
+# meant to detect it -- the model quietly learns the depressed level and then
+# reports "no anomaly". Holding the forecast origin behind the window keeps the
+# baseline uncontaminated and matches how planning cadences actually work.
+#
+# The lag must place the forecast origin before the EARLIEST known intervention
+# in the period under review (here the budget change on 10 August). Longer than
+# necessary is not free: every extra day of horizon compounds trend
+# extrapolation error, and at a 14-day lag the baseline over-forecasts by 3.6%,
+# which would be misread as 3.6 percentage points of business decline that never
+# happened. Shorter risks training on the incident itself.
+baseline_refresh_lag_days: 7
+currency: INR
+timezone: "Asia/Kolkata"
+
+# -----------------------------------------------------------------------------
+# SOURCES — deliberately heterogeneous in grain, cadence, quality and history
+# -----------------------------------------------------------------------------
+sources:
+
+  wh_sales:
+    system: "Snowflake :: FIN_MART.SALES_FACT"
+    type: structured
+    grain: [date, region, category, channel]
+    refresh_cadence: daily
+    refresh_time: "02:00 IST"
+    expected_lag_hours: 26
+    freshness_sla_hours: 30
+    quality_tier: gold
+    history_from: "2023-01-01"
+    notes: "Financially reconciled. Authoritative for revenue, COGS, discounts."
+
+  web_events:
+    system: "BigQuery :: GA4_EXPORT.events_*"
+    type: structured
+    grain: [datetime_hour, region, channel, device]
+    refresh_cadence: hourly
+    expected_lag_hours: 4
+    freshness_sla_hours: 8
+    quality_tier: silver
+    history_from: "2023-01-01"
+    notes: >
+      Hourly grain must be rolled up to daily before joining wh_sales.
+      Bot-filtered but not financially reconciled. Sessions are de-duplicated
+      per device, so cross-device users are double counted (~3% inflation).
+
+  ops_inventory:
+    system: "SAP IBP :: WEEKLY_STOCK_POSITION"
+    type: structured
+    grain: [iso_week, region, category, warehouse]
+    refresh_cadence: weekly
+    refresh_time: "Monday 06:00 IST"
+    expected_lag_hours: 168
+    freshness_sla_hours: 180
+    quality_tier: bronze
+    history_from: "2024-06-01"
+    notes: >
+      WEEKLY grain against a DAILY KPI. Cannot resolve within-week stockouts;
+      the engine must interpolate and MUST widen uncertainty when this source
+      is load-bearing for a conclusion. This is a real limitation, not a bug.
+
+  ctx_docs:
+    system: "Confluence + Jira + Zendesk + CompetitorPriceScrape"
+    type: unstructured
+    grain: [event_datetime, region]
+    refresh_cadence: ad_hoc
+    expected_lag_hours: 12
+    freshness_sla_hours: 168      # ad-hoc context tolerates a week
+    freshness_sla_hours_override: 168
+    quality_tier: bronze
+    history_from: "2025-01-01"
+    notes: "Retrieved via BM25, never aggregated. Provides context, not counts."
+
+# -----------------------------------------------------------------------------
+# KPIs — definition, formula, grain, thresholds, lineage
+# -----------------------------------------------------------------------------
+kpis:
+
+  net_revenue:
+    label: "Net Revenue"
+    definition: >
+      Gross merchandise value less returns, cancellations and discounts,
+      excluding shipping revenue and GST. Recognised on dispatch, not on order.
+    unit: INR
+    formula: "orders * aov"
+    children: [orders, aov]
+    grain: [date, region, category, channel]
+    sources: [wh_sales]
+    baseline_method: holt_winters_weekly
+    materiality:
+      min_abs_inr: 5000000        # Rs 50 lakh — below this, nobody acts
+      min_pct: 3.0
+      significance_alpha: 0.05
+      rule: "abs_breach AND pct_breach AND statistically_significant"
+    lineage:
+      - "SALES_FACT.gmv_inr"
+      - "SALES_FACT.returns_inr"
+      - "SALES_FACT.discount_inr"
+      - "dbt model: fct_net_revenue_daily (build 4471)"
+
+  orders:
+    label: "Orders"
+    definition: "Count of dispatched orders, net of cancellations."
+    unit: count
+    formula: "sessions * conversion_rate"
+    children: [sessions, conversion_rate]
+    grain: [date, region, category, channel]
+    sources: [wh_sales, web_events]
+    baseline_method: holt_winters_weekly
+    materiality:
+      min_abs_inr: null
+      min_pct: 3.0
+      significance_alpha: 0.05
+      rule: "pct_breach AND statistically_significant"
+    lineage:
+      - "SALES_FACT.order_id (distinct, status != CANCELLED)"
+
+  conversion_rate:
+    label: "Conversion Rate"
+    definition: >
+      Dispatched orders divided by unique sessions, same day, same region.
+      NOTE: numerator is wh_sales (daily, T-1) and denominator is web_events
+      (hourly, T-4h). Mixed-source ratio; both must be fresh to be trusted.
+    unit: ratio
+    formula: "orders / sessions"
+    children: []
+    grain: [date, region, channel, device]
+    sources: [wh_sales, web_events]
+    baseline_method: holt_winters_weekly
+    mixed_source_ratio: true      # engine flags this explicitly in evidence
+    materiality:
+      min_abs_inr: null
+      min_pct: 5.0
+      significance_alpha: 0.05
+      rule: "pct_breach AND statistically_significant"
+    lineage:
+      - "fct_net_revenue_daily.orders"
+      - "ga4_sessions_daily.sessions"
+
+  aov:
+    label: "Average Order Value"
+    definition: "Net revenue divided by dispatched orders."
+    unit: INR
+    formula: "units_per_order * asp"
+    children: []
+    grain: [date, region, category, channel]
+    sources: [wh_sales]
+    baseline_method: holt_winters_weekly
+    materiality:
+      min_abs_inr: null
+      min_pct: 4.0
+      significance_alpha: 0.05
+      rule: "pct_breach AND statistically_significant"
+    lineage:
+      - "SALES_FACT.net_revenue_inr / SALES_FACT.order_count"
+
+  gross_margin_pct:
+    label: "Gross Margin %"
+    definition: >
+      (Net revenue - COGS) / Net revenue. COGS is landed cost including
+      inbound freight and duty, sourced weekly from SAP.
+    unit: percentage_points
+    formula: "(net_revenue - cogs) / net_revenue"
+    children: []
+    grain: [date, region, category]
+    sources: [wh_sales, ops_inventory]
+    baseline_method: holt_winters_weekly
+    sensitive: true               # column-level protected — see entitlements
+    materiality:
+      min_abs_inr: null
+      min_pct: 1.5                # in percentage points
+      significance_alpha: 0.05
+      rule: "pct_breach AND statistically_significant"
+    lineage:
+      - "SALES_FACT.net_revenue_inr"
+      - "WEEKLY_STOCK_POSITION.landed_cogs_inr"
+
+# -----------------------------------------------------------------------------
+# DRIVERS — the ONLY explanations the engine is permitted to propose.
+# Controllability and owner are what turn an explanation into an action.
+# -----------------------------------------------------------------------------
+drivers:
+
+  checkout_experience:
+    label: "Checkout experience / release health"
+    controllable: true
+    owner_role: "Head of Product Engineering"
+    decision_rights: "May roll back own release without approval."
+    measured_by: [checkout_error_rate, checkout_abandon_rate]
+    source: web_events
+    affects: [conversion_rate]
+
+  discount_depth:
+    label: "Discount depth"
+    controllable: true
+    owner_role: "Pricing Manager"
+    decision_rights: "Up to 10% without CFO approval. Margin floor 18%."
+    measured_by: [discount_pct]
+    source: wh_sales
+    affects: [aov, conversion_rate, gross_margin_pct]
+    applies_to_categories: [Accessories]
+    exposure:
+      # This promotion MUST be modelled even though nobody asked about it.
+      # It is not a candidate explanation for the revenue drop -- it pushes the
+      # other way. But leaving it out of the model does real damage: with date
+      # fixed effects, an unmodelled +26% conversion spike in Accessories lifts
+      # every affected day's fixed effect, which then pushes every OTHER
+      # category's coefficient artificially negative. Omitting a known event
+      # biases the events you actually care about.
+      kind: event_window
+      doc_type: campaign
+
+  marketing_spend:
+    label: "Paid marketing spend"
+    controllable: true
+    owner_role: "Growth Lead"
+    decision_rights: "Reallocate within approved quarterly envelope."
+    measured_by: [paid_spend_inr]
+    source: wh_sales
+    affects: [sessions]
+    applies_to_categories: null          # budget cut is category-agnostic
+    exposure:
+      kind: measured
+      column: paid_spend
+      transform: log
+
+  in_stock_rate:
+    label: "In-stock availability"
+    controllable: true
+    owner_role: "Supply Chain Lead"
+    decision_rights: "Expedite freight up to Rs 20L per incident."
+    measured_by: [in_stock_rate]
+    source: ops_inventory
+    affects: [conversion_rate, sessions]   # <-- also suppresses traffic
+    applies_to_categories: [Electronics]
+    exposure:
+      # The structured supply feed is WEEKLY. A stockout that ran 19-23 August
+      # is smeared across a seven-day average, so the daily variation needed to
+      # identify its effect simply is not in that source -- the estimate comes
+      # back non-significant not because nothing happened but because the grain
+      # cannot see it.
+      #
+      # The incident ticket, by contrast, carries exact dates. So the engine
+      # prefers an event window derived from unstructured evidence and records
+      # that the structured route was attempted and failed. Retrieval feeding a
+      # statistical model, not feeding a prompt.
+      kind: event_window
+      doc_type: supply
+      window_pad_days: 4
+      fallback_column: in_stock_rate
+      degraded_note: >
+        Effect identified from an incident ticket rather than the supply feed,
+        because the weekly grain cannot resolve a five-day event.
+
+  competitor_price:
+    label: "Competitor price position"
+    controllable: false
+    owner_role: "Category Manager (monitor only)"
+    decision_rights: "No direct control. May respond via discount_depth."
+    measured_by: [competitor_price_index]
+    source: ctx_docs
+    affects: [conversion_rate, sessions]
+    # Scoped to the categories the scrape actually covers. Estimating this
+    # across all categories would let the concurrent Accessories promotion --
+    # which lifts conversion over almost the same dates -- load onto the
+    # competitor indicator and flip its sign positive.
+    applies_to_categories: [Electronics, Wearables]
+    exposure:
+      kind: event_window
+      doc_type: competitor
+      window_pad_days: 4
+
+  seasonality:
+    label: "Seasonality and calendar effects"
+    controllable: false
+    owner_role: null
+    decision_rights: "Not actionable. Removed by baseline, never reported as a cause."
+    measured_by: [week_of_year]
+    source: wh_sales
+    affects: [sessions, conversion_rate, aov]
+
+# -----------------------------------------------------------------------------
+# CAUSAL DAG — used for backdoor adjustment set selection.
+# Read as: parent -> child (parent causes child).
+#
+# The load-bearing subtlety: in_stock_rate and competitor_price BOTH affect
+# sessions AND conversion_rate. So `sessions` is a MEDIATOR, not an exogenous
+# driver. Any attribution that treats a session decline as an independent
+# cause will double-count. This is exactly the trap the CHALLENGE stage exists
+# to catch, and it is why correlation ranking gets this scenario wrong.
+# -----------------------------------------------------------------------------
+causal_dag:
+  edges:
+    - [checkout_deploy, checkout_error_rate]
+    - [checkout_error_rate, conversion_rate]
+    - [checkout_deploy, conversion_rate]
+    - [competitor_price_index, conversion_rate]
+    - [competitor_price_index, sessions]
+    - [marketing_spend, sessions]
+    - [in_stock_rate, conversion_rate]
+    - [in_stock_rate, sessions]
+    - [seasonality, sessions]
+    - [seasonality, conversion_rate]
+    - [sessions, orders]
+    - [conversion_rate, orders]
+    - [orders, net_revenue]
+    - [aov, net_revenue]
+    - [discount_depth, aov]
+    - [discount_depth, conversion_rate]
+    - [discount_depth, gross_margin_pct]
+
+  # Identification strategy per driver. The engine picks the method from here,
+  # it does not guess, and it records the choice in the evidence trail.
+  identification:
+    checkout_experience:
+      method: difference_in_differences
+      outcome: conversion_rate
+      treated_units: ["EU"]
+      control_units: ["US", "APAC"]
+      treatment_date: "2026-08-12"
+      # Pre-window reaches back three weeks. Nothing perturbs conversion before
+      # 12 August, so the extra days are clean and buy statistical power that a
+      # single pre-week cannot: with only 11 pre-days the estimator cannot
+      # separate a 3-4% effect from daily trading noise.
+      pre_window: ["2026-07-15", "2026-08-11"]
+      post_window: ["2026-08-12", "2026-08-18"]
+      panel_granularity: [date, region, category, channel]
+      parallel_trends_window_days: 28
+      # The estimation scope is deliberately NARROWER than the incident scope.
+      # A difference-in-differences estimate is only clean where the treatment
+      # is the ONLY thing that differs between treated and control over the
+      # window. Three other events overlap, so each is excluded by construction
+      # rather than adjusted for after the fact:
+      exclude_categories:
+        - "Accessories"    # EU-only bundle promo from 14 Aug lifts conversion
+        - "Wearables"      # six weeks of history; too volatile to inform this
+      # Electronics is deliberately KEPT despite carrying two other events.
+      # The stockout begins 19 August, after the post-window closes. The
+      # competitor price cut runs in EU and US alike, so a shock common to
+      # treated and control differences out — that is precisely what DiD is
+      # for. Excluding Electronics would discard 70% of the business and leave
+      # the estimator too underpowered to detect a 3-4% effect at all.
+      post_window_ends_before: "2026-08-19"   # stops before the stockout begins
+      rationale: >
+        The checkout redesign shipped to EU only; US and APAC remain on build
+        v4.1, giving a genuinely untreated control group. This is a natural
+        experiment rather than an observational comparison.
+
+        Conversion rate is the outcome, not revenue, and that choice does real
+        work: the EU marketing budget cut moves sessions but cannot move
+        conversion, so using a conversion outcome removes that confounder by
+        construction instead of by adjustment. The competitor promotion ran in
+        both EU and US, so it differences out. What remains after excluding the
+        three contaminated categories and stopping before the stockout is a
+        window in which the release is the only thing that differs.
+      assumptions:
+        - "Parallel trends between EU and control regions before 12 August"
+        - "No anticipation effect before the release date"
+        - "No spillover from treated to control regions"
+    in_stock_rate:
+      method: backdoor_adjustment
+      adjustment_set: [seasonality, marketing_spend]
+      rationale: "No experiment available. Adjust for common causes of stock and demand."
+    competitor_price:
+      method: backdoor_adjustment
+      adjustment_set: [seasonality, discount_depth]
+      rationale: "Observational. Weekly scrape cadence limits temporal precision."
+    marketing_spend:
+      method: difference_in_differences
+      outcome: sessions
+      treated_units: ["EU"]
+      control_units: ["US", "APAC"]
+      treatment_date: "2026-08-10"
+      pre_window: ["2026-07-15", "2026-08-09"]
+      post_window: ["2026-08-10", "2026-08-18"]
+      # Accessories is excluded because its bundle promotion discounts baskets
+      # over the same days. Leaving it in makes the AOV negative-control test
+      # fail (p = 0.0005) -- correctly, since EU basket size really is moving,
+      # just not because of the budget. That is the negative control doing its
+      # job: it detected a genuine confound rather than waving the estimate
+      # through. The response is to exclude the known concurrent event, not to
+      # loosen the test.
+      exclude_categories: ["Wearables", "Accessories"]
+      rationale: >
+        The budget reduction applies region-wide, so within-EU comparisons
+        cannot identify it: it moves every category on the same days and is
+        therefore perfectly collinear with any date-fixed-effect specification.
+        A control region is the only way to see it. EU is treated from 10
+        August; US and APAC budgets are unchanged.
+
+        The post-window closes on 18 August, before the stockout begins, and
+        the checkout release does not affect sessions at all, so neither
+        contaminates this estimate.
+      assumptions:
+        - "Parallel session trends between EU and controls before 10 August"
+        - "Budget change is exogenous, set by the H2 efficiency plan"
+
+# -----------------------------------------------------------------------------
+# CONFIDENCE — deterministic. No LLM input. Weights sum to 1.0.
+# -----------------------------------------------------------------------------
+confidence:
+  weights:
+    source_freshness: 0.20        # were all required sources within SLA?
+    data_coverage: 0.20           # share of required rows actually present
+    statistical_power: 0.25       # effect size vs standard error
+    refutation_survival: 0.25     # did the hypothesis survive falsification?
+    context_corroboration: 0.10   # does unstructured evidence agree?
+  tiers:
+    high:   {min: 0.75, action: "recommend"}
+    medium: {min: 0.60, action: "recommend_with_caveats"}
+    low:    {min: 0.00, action: "abstain"}
+  abstain_rules:
+    - "confidence < 0.60"
+    - "two or more hypotheses within 0.10 posterior of each other"
+    - "any load-bearing source breached its freshness SLA"
+    - "required data coverage below 0.85"
+  # When abstaining the engine MUST emit ranked next-best-evidence
+  # (Value of Information), never a hedged guess.
+
+# -----------------------------------------------------------------------------
+# SPARSE HISTORY — method switching when there is not enough past to forecast
+# -----------------------------------------------------------------------------
+sparse_history:
+  min_weeks_for_seasonal_model: 52
+  min_weeks_for_trend_model: 12
+  fallback_method: partial_pooling
+  fallback_rationale: >
+    Below 12 weeks of history no per-series baseline is estimable. The engine
+    borrows strength from an analogous cohort (same category archetype, prior
+    launch) via a hierarchical prior, and widens the prediction interval to
+    reflect the borrowed information. It reports the analogue it used.
+  analogues:
+    wearables: audio_accessories   # launched 2025-03, similar price/ASP curve
+  # Inflation covers three distinct sources of uncertainty that a normal
+  # residual standard error does not see on a young series:
+  #   1. the level itself is estimated from only a handful of weeks
+  #   2. the seasonal shape is BORROWED, not measured on this series
+  #   3. early-life demand is structurally more volatile than a mature series
+  # The engine still reports the movement; it simply declines to call it
+  # material. Refusing to over-claim on three weeks of data is the correct
+  # statistical behaviour, not a limitation of the prototype.
+  interval_inflation_factor: 3.0
+  include_level_uncertainty: true
+  # IRREDUCIBLE uncertainty floor for young series, as a fraction of the
+  # expected level, scaled by sqrt(weeks of history available).
+  #
+  # Residual-based standard errors have a specific failure on new launches:
+  # a short, quiet history produces a SMALL residual spread, so the model
+  # becomes MORE confident precisely where it knows least. A category six
+  # weeks old has unknown seasonality, an unstable acquisition mix and a
+  # changing assortment; none of that appears in three weeks of residuals.
+  # The floor encodes that ignorance directly, so the interval reflects how
+  # little is known rather than how quiet the sample happened to be.
+  #
+  # At 3 weeks the floor is 28%/sqrt(3) = 16.2%; at the 12-week threshold it
+  # decays to 8.1% and the ordinary estimate takes over.
+  uncertainty_floor_coefficient: 0.28
+
+# -----------------------------------------------------------------------------
+# ENTITLEMENTS — enforced in SQL before evidence assembly. Never prompt-based.
+# -----------------------------------------------------------------------------
+entitlements:
+
+  roles:
+
+    CFO:
+      row_filter: null
+      denied_columns: []
+      denied_kpis: []
+      insight_depth: executive
+
+    CMO:
+      row_filter: null
+      denied_columns: [cogs_inr, landed_cogs_index]
+      denied_kpis: []
+      insight_depth: executive
+
+    DataAnalyst:
+      row_filter: null
+      denied_columns: []
+      denied_kpis: []
+      insight_depth: technical
+
+    RegionalManager_EU:
+      row_filter: "region = 'EU'"
+      denied_columns: [cogs_inr, landed_cogs_index, gross_margin_pct, discount_inr]
+      denied_kpis: [gross_margin_pct]
+      insight_depth: operational
+      # Degradation policy: when a material driver lies outside this role's
+      # row scope, the engine must NOT silently drop it. It discloses that a
+      # driver exists, withholds the values, and routes to the owning role.
+      out_of_scope_policy: disclose_existence_and_route
+
+  audit:
+    log_table: audit_log
+    capture: [timestamp, user, role, kpi, row_filter_applied,
+              columns_masked, kpis_denied, decision_id]
+    retention_days: 2555          # 7 years
+
+# -----------------------------------------------------------------------------
+# PERSONA DELIVERY — same evidence, different rendering. Evidence is computed
+# ONCE; personas only change what is selected and how it is phrased.
+# -----------------------------------------------------------------------------
+personas:
+
+  cmo:
+    display_name: "Priya Nair"
+    title: "Chief Marketing Officer"
+    role: CMO
+    channel: slack
+    max_words: 90
+    include: [headline, revenue_impact_inr, top_driver, single_recommended_action, confidence_tier]
+    exclude: [p_values, confidence_intervals, sql, method_internals, refutation_detail]
+    tone: "Direct. No statistical vocabulary. Lead with the rupee number."
+
+  analyst:
+    display_name: "Rahul Menon"
+    title: "Senior Data Analyst"
+    role: DataAnalyst
+    channel: web_workspace
+    max_words: 400
+    include: [headline, full_contribution_table, method_per_driver, effect_sizes,
+              confidence_intervals, p_values, refutation_results, lineage,
+              sql_snippets, alternative_hypotheses, freshness_table]
+    exclude: []
+    tone: "Precise and hedged. State the identification strategy and its assumptions."
+
+  regional_manager:
+    display_name: "Lukas Weber"
+    title: "Regional Manager, EU"
+    role: RegionalManager_EU
+    channel: email
+    max_words: 150
+    include: [headline, region_scoped_impact, controllable_levers_in_scope,
+              owner_routing, confidence_tier]
+    exclude: [p_values, sql, margin_figures, out_of_region_values]
+    tone: "Operational. Say what he can act on and who owns the rest."
