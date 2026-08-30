@@ -5,12 +5,14 @@ the entire CHALLENGE stage has nothing to prove. So this check is run before
 any engine code is written.
 """
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 RAW = ROOT / "data" / "raw"
 
 truth = json.loads((ROOT / "data" / "ground_truth.json").read_text())

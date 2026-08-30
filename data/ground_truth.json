@@ -10,28 +10,28 @@
     "end": "2026-08-23"
   },
   "expected_revenue_inr": 97663607.50975785,
-  "actual_revenue_inr": 89850518.90866333,
-  "movement_pct": -8.000000000321396,
+  "actual_revenue_inr": 89850518.90867898,
+  "movement_pct": -8.000000000305375,
   "contributions_pct": {
-    "checkout_deploy": -3.5999999999980257,
-    "stockout": -2.3999999999995234,
-    "competitor_promo": -1.90000000000299,
-    "marketing_cut": -1.0999999999968268,
-    "accessories_promo": 0.9999999996759694
+    "checkout_deploy": -3.5999999999956502,
+    "stockout": -2.399999999996208,
+    "competitor_promo": -1.8999999999994301,
+    "marketing_cut": -1.099999999993492,
+    "accessories_promo": 0.9999999996794059
   },
   "contributions_inr": {
-    "checkout_deploy": -3515889.870349354,
-    "stockout": -2343926.580233723,
-    "competitor_promo": -1855608.542688319,
-    "marketing_cut": -1074299.6826042372,
-    "accessories_promo": 976636.0747811184
+    "checkout_deploy": -3515889.870347034,
+    "stockout": -2343926.5802304847,
+    "competitor_promo": -1855608.5426848426,
+    "marketing_cut": -1074299.6826009804,
+    "accessories_promo": 976636.0747844747
   },
   "shock_strengths": {
-    "checkout_deploy": 0.03683187989950224,
-    "stockout": 0.047647301054764744,
-    "competitor_promo": 0.02735001212076575,
-    "marketing_cut": 0.011399131699342232,
-    "accessories_promo": 0.3323313378985264
+    "checkout_deploy": 0.03683187989947539,
+    "stockout": 0.04764730105469531,
+    "competitor_promo": 0.027350012120712683,
+    "marketing_cut": 0.01139913169930703,
+    "accessories_promo": 0.33233133789984254
   },
   "shock_labels": {
     "checkout_deploy": "Checkout redesign v4.2 shipped to EU only",

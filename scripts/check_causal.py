@@ -1,6 +1,10 @@
 """Compare every causal estimate against the planted ground truth."""
 import numpy as np
+import sys
+from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 from causiq.engine.reconcile import build_warehouse
 from causiq.engine.challenge import estimate_joint_event_study, estimate_did
 
