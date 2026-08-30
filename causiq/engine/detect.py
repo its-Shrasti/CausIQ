@@ -155,8 +155,8 @@ def _fit_holt_winters(train: pd.Series, horizon: int) -> tuple[np.ndarray, float
     # beyond a few steps and materially reduces forecast bias here.
     model = ExponentialSmoothing(
         train, trend="add", damped_trend=True, seasonal="add", seasonal_periods=7,
-        initialization_method="estimated",
-    ).fit(optimized=True)
+        initialization_method="heuristic",
+    ).fit(optimized=True, use_brute=True)
     fc = np.asarray(model.forecast(horizon))
     resid = np.asarray(model.resid)
     se = float(np.std(resid[-120:], ddof=1)) if len(resid) > 20 else float(np.std(resid, ddof=1))
